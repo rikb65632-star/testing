@@ -134,10 +134,9 @@ const server = http.createServer((req, res) => {
       }
     }
 
-    // Send the ACK to clear the device log
-    const ackObj = { result: "OK" };
-    if (logId) ackObj.log_id = logId;
-    const ack = JSON.stringify(ackObj);
+    // Send the exact ACK format to clear the device log queue
+    // SDK sends: {"log_id": "", "result": "OK"}
+    const ack = JSON.stringify({ log_id: logId || "", result: "OK" });
 
     res.writeHead(200, {
       'Content-Type': 'application/json',
