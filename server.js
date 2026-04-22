@@ -67,7 +67,16 @@ const server = net.createServer((socket) => {
   let buffer = '';
 
   socket.on('data', (chunk) => {
-    buffer += chunk.toString();
+    // ---- ADDED: Log ALL raw bytes as string and hex immediately ----
+    const rawString = chunk.toString();
+    const hexString = chunk.toString('hex');
+    console.log(`[${timestamp()}] 🔍 RAW RECEIVE [${chunk.length} bytes]:`);
+    console.log(`  STR: ${rawString.replace(/\n/g, '\\n').replace(/\r/g, '\\r')}`);
+    // console.log(`  HEX: ${hexString}`); // Uncomment if we need binary debugging
+    appendRawLog(`[${timestamp()}] RAW [${chunk.length}b]: ${rawString}`);
+    // ----------------------------------------------------------------
+
+    buffer += rawString;
 
     let start = buffer.indexOf('{');
     while (start !== -1) {
