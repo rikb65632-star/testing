@@ -142,24 +142,19 @@ const server = http.createServer((req, res) => {
       }
     }
 
-    // Send the ACK wrapped in a binary frame header!
-    // The physical Biomax firmware requires the JSON string to be preceded by
-    // a 4-byte Little Endian integer representing the string length.
-    const ackJson = JSON.stringify({ log_id: logId || "", result: "OK" });
-    const jsonBuffer = Buffer.from(ackJson, 'utf8');
-    
-    const headerBuffer = Buffer.alloc(4);
-    headerBuffer.writeInt32LE(jsonBuffer.length, 0);
-    
-    // Combine 4-byte binary header + JSON string
-    const finalBuffer = Buffer.concat([headerBuffer, jsonBuffer]);
+    // The log_id actually lives in the HTTP headers, not the JSON body!
+    // The device uses cmd_id or log_id in the headers to keep track of retries.
+    let headerLogId = req.headers['log_id'] || req.headers['cmd_id'] || '';
+
+    // Send the ACK
+    const ackJson = JSON.stringify({ log_id: logId || headerLogId || "", result: "OK" });
 
     res.writeHead(200, {
-      'Content-Type': 'application/octet-stream',
-      'Content-Length': finalBuffer.length
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(ackJson)
     });
-    res.end(finalBuffer);
-    console.log(`  ↩ ACK Sent: ${ackJson} (with binary headers)`);
+    res.end(ackJson);
+    console.log(`  ↩ ACK Sent: ${ackJson}`);
   });
 });
 
