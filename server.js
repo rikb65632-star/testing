@@ -94,43 +94,51 @@ const server = http.createServer((req, res) => {
     
     console.log(`[${timestamp()}] 📥 ${req.method} ${req.url} from ${remoteAddr}`);
 
-    // Try to extract JSON starting at '{' and ending at '}'
+    // Extract one or multiple JSON objects (in case device batches logs together `{...}{...}`)
     let logId = '';
-    const startIdx = bodyStr.indexOf('{');
-    if (startIdx !== -1) {
-      let jsonStr = bodyStr.substring(startIdx);
-      const endIdx = jsonStr.lastIndexOf('}');
-      if (endIdx !== -1) {
-        jsonStr = jsonStr.substring(0, endIdx + 1);
-        try {
-          const data = JSON.parse(jsonStr);
-          logId = data.log_id || '';
-          
-          // Log device info updates
-          if (data.fk_info) {
-             console.log(`  📊 Device Info Ping: ${data.fk_info.user_count} users, ${data.fk_info.fp_count} fingerprints`);
-          }
-          
-          // Check if this is an attendance hit!
-          if (data.user_id && data.io_time) {
-            const record = {
-              receivedAt : timestamp(),
-              serialNo   : data.SerialNo     || '',
-              userId     : data.user_id,
-              deviceId   : data.fk_device_id || '',
-              verifyMode : VERIFY_MODE[data.verify_mode] || data.verify_mode || '',
-              ioMode     : data.io_mode      || '',
-              punchTime  : formatIoTime(data.io_time),
-              logId,
-              remoteAddr,
-            };
-            appendAttendanceLog(record);
-            console.log(`  🌟 SAVED | User: ${record.userId} | Time: ${record.punchTime} | Mode: ${record.verifyMode}`);
-          }
-
-        } catch (err) {
-          console.log(`  ⚠ Parse error: ${err.message}`);
+    const jsonChunks = [];
+    let depth = 0, startIndex = -1;
+    
+    for (let i = 0; i < bodyStr.length; i++) {
+      if (bodyStr[i] === '{') {
+        if (depth === 0) startIndex = i;
+        depth++;
+      } else if (bodyStr[i] === '}') {
+        depth--;
+        if (depth === 0 && startIndex !== -1) {
+          jsonChunks.push(bodyStr.substring(startIndex, i + 1));
+          startIndex = -1;
         }
+      }
+    }
+
+    // Parse all extracted chunks
+    for (const jsonStr of jsonChunks) {
+      try {
+        const data = JSON.parse(jsonStr);
+        if (data.log_id) logId = data.log_id; // save last seen logId for ACK
+        
+        if (data.fk_info) {
+           console.log(`  📊 Device Info Ping: ${data.fk_info.user_count} users, ${data.fk_info.fp_count} fingerprints`);
+        }
+        
+        if (data.user_id && data.io_time) {
+          const record = {
+            receivedAt : timestamp(),
+            serialNo   : data.SerialNo     || '',
+            userId     : data.user_id,
+            deviceId   : data.fk_device_id || '',
+            verifyMode : VERIFY_MODE[data.verify_mode] || data.verify_mode || '',
+            ioMode     : data.io_mode      || '',
+            punchTime  : formatIoTime(data.io_time),
+            logId      : data.log_id || '',
+            remoteAddr,
+          };
+          appendAttendanceLog(record);
+          console.log(`  🌟 SAVED | User: ${record.userId} | Time: ${record.punchTime} | Mode: ${record.verifyMode}`);
+        }
+      } catch (err) {
+        console.log(`  ⚠ Parse error on chunk: ${err.message}`);
       }
     }
 
