@@ -1,32 +1,24 @@
 /**
- * Biomax N-E90 Pro — TCP Real-Time Log Server
- *
- * Protocol : Raw TCP (Biomax FKRealSvrOcxTcp SDK)
- * Port     : TCP_PORT env var (default 7005)
- *
- * Device sends JSON:
- *   { "log_id", "user_id", "fk_device_id", "verify_mode",
- *     "io_mode", "io_time" (YYYYMMDDHHmmss), "SerialNo" }
- *
- * Server responds with:
- *   { "log_id": "...", "result": "OK", "mode": "nothing" }
- *
- * Logs saved to:
- *   ./logs/YYYY-MM-DD.log              — raw data from every connection
- *   ./logs/attendance-YYYY-MM-DD.json  — parsed attendance records
+ * Biomax N-E90 Pro — HTTP Real-Time Log Server
+ * 
+ * We discovered the device pushes data using HTTP POST requests mapping to 
+ * /hdata.aspx or similar, sending JSON wrapped in HTTP.
+ * 
+ * Example header:
+ *   POST /hdata.aspx HTTP/1.0
+ *   request_code: receive_cmd
  */
 
-const net  = require('net');
+const http = require('http');
 const fs   = require('fs');
 const path = require('path');
 
-const TCP_PORT = process.env.TCP_PORT || process.env.PORT || 7005;
-const LOG_DIR  = process.env.LOG_DIR  || path.join(__dirname, 'logs');
+const PORT    = process.env.TCP_PORT || process.env.PORT || 7005;
+const LOG_DIR = process.env.LOG_DIR  || path.join(__dirname, 'logs');
 
 // ── Ensure log directory exists ─────────────────────────────────────────────
 if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true });
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
 function today()     { return new Date().toISOString().slice(0, 10); }
 function timestamp() { return new Date().toISOString(); }
 
@@ -45,7 +37,6 @@ function appendAttendanceLog(record) {
   fs.writeFileSync(file, JSON.stringify(records, null, 2), 'utf8');
 }
 
-/** Convert Biomax io_time "YYYYMMDDHHmmss" → "YYYY-MM-DD HH:mm:ss" */
 function formatIoTime(t) {
   if (!t || t.length < 14) return t || '';
   return `${t.slice(0,4)}-${t.slice(4,6)}-${t.slice(6,8)} ` +
@@ -59,87 +50,107 @@ const VERIFY_MODE = {
   '22': 'Face+Pass',  '23': 'Card+Face','24': 'Pass+Face',
 };
 
-// ── TCP Server ───────────────────────────────────────────────────────────────
-const server = net.createServer((socket) => {
-  const remoteAddr = `${socket.remoteAddress}:${socket.remotePort}`;
-  console.log(`[${timestamp()}] ✅ Device connected from ${remoteAddr}`);
+// ── HTTP Server ─────────────────────────────────────────────────────────────
+const server = http.createServer((req, res) => {
+  const remoteAddr = `${req.socket.remoteAddress}:${req.socket.remotePort}`;
 
-  let buffer = '';
+  // 1. Browser health check
+  if (req.method === 'GET') {
+    const logCount = fs.existsSync(LOG_DIR) 
+      ? fs.readdirSync(LOG_DIR).filter(f => f.endsWith('.json')).length 
+      : 0;
 
-  socket.on('data', (chunk) => {
-    // ---- ADDED: Log ALL raw bytes as string and hex immediately ----
-    const rawString = chunk.toString();
-    const hexString = chunk.toString('hex');
-    console.log(`[${timestamp()}] 🔍 RAW RECEIVE [${chunk.length} bytes]:`);
-    console.log(`  STR: ${rawString.replace(/\n/g, '\\n').replace(/\r/g, '\\r')}`);
-    // console.log(`  HEX: ${hexString}`); // Uncomment if we need binary debugging
-    appendRawLog(`[${timestamp()}] RAW [${chunk.length}b]: ${rawString}`);
-    // ----------------------------------------------------------------
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(`
+      <html><head><title>Biomax Server (HTTP)</title>
+      <style>body{font-family:monospace;background:#111;color:#0f0;padding:2rem;}</style></head>
+      <body>
+        <h2>✅ Biomax N-E90 Pro Server — Running</h2>
+        <p>Receiving logs on HTTP port <b>${PORT}</b></p>
+        <p>Parsed attendance logs: <b>${logCount}</b> file(s)</p>
+        <p>Time: ${timestamp()}</p>
+      </body></html>
+    `);
+    return;
+  }
 
-    buffer += rawString;
-
-    let start = buffer.indexOf('{');
-    while (start !== -1) {
-      let depth = 0, end = -1;
-      for (let i = start; i < buffer.length; i++) {
-        if (buffer[i] === '{') depth++;
-        if (buffer[i] === '}') { depth--; if (depth === 0) { end = i; break; } }
-      }
-      if (end === -1) break;
-
-      const raw = buffer.slice(start, end + 1);
-      buffer = buffer.slice(end + 1);
-      start = buffer.indexOf('{');
-
-      // Raw log
-      appendRawLog([
-        `[${timestamp()}] FROM: ${remoteAddr}`,
-        `RAW: ${raw}`,
-        '─'.repeat(60),
-      ].join('\n'));
-      console.log(`[${timestamp()}] 📥 ${remoteAddr}: ${raw.slice(0, 120)}`);
-
-      try {
-        const data    = JSON.parse(raw);
-        const logId   = data.log_id       || '';
-        const userId  = data.user_id      || '';
-
-        const record = {
-          receivedAt : timestamp(),
-          serialNo   : data.SerialNo     || '',
-          userId,
-          deviceId   : data.fk_device_id || '',
-          verifyMode : VERIFY_MODE[data.verify_mode] || data.verify_mode || '',
-          ioMode     : data.io_mode      || '',
-          punchTime  : formatIoTime(data.io_time || ''),
-          logId,
-          remoteAddr,
-        };
-        appendAttendanceLog(record);
-        console.log(`  ✓ Saved | User: ${userId} | Time: ${record.punchTime} | Mode: ${record.verifyMode}`);
-
-        // ACK
-        const ack = JSON.stringify({ log_id: logId, result: 'OK', mode: 'nothing' });
-        socket.write(ack);
-        console.log(`  ↩ ACK: ${ack}`);
-
-      } catch (err) {
-        console.log(`  ⚠ Parse error: ${err.message}`);
-        appendRawLog(`[PARSE-ERR ${timestamp()}] ${err.message}\n${raw}`);
-      }
-    }
+  // 2. Handle POST from Biomax device
+  let body = Buffer.alloc(0);
+  req.on('data', chunk => {
+    body = Buffer.concat([body, chunk]);
   });
 
-  socket.on('end',   () => console.log(`[${timestamp()}] 🔌 Disconnected: ${remoteAddr}`));
-  socket.on('error', (e) => console.log(`[${timestamp()}] ❌ Error (${remoteAddr}): ${e.message}`));
+  req.on('end', () => {
+    const bodyStr = body.toString('utf8');
+    
+    // Log raw physical bytes received
+    const rawEntry = [
+      `[${timestamp()}] POST ${req.url} FROM: ${remoteAddr}`,
+      `Headers: ${JSON.stringify(req.headers)}`,
+      `Body [${body.length}b]: ${bodyStr.replace(/\r/g, '\\r').replace(/\n/g, '\\n')}`,
+      '─'.repeat(60)
+    ].join('\n');
+    appendRawLog(rawEntry);
+    
+    console.log(`[${timestamp()}] 📥 ${req.method} ${req.url} from ${remoteAddr}`);
+
+    // Try to extract JSON starting at '{' and ending at '}'
+    let logId = '';
+    const startIdx = bodyStr.indexOf('{');
+    if (startIdx !== -1) {
+      let jsonStr = bodyStr.substring(startIdx);
+      const endIdx = jsonStr.lastIndexOf('}');
+      if (endIdx !== -1) {
+        jsonStr = jsonStr.substring(0, endIdx + 1);
+        try {
+          const data = JSON.parse(jsonStr);
+          logId = data.log_id || '';
+          
+          // Log device info updates
+          if (data.fk_info) {
+             console.log(`  📊 Device Info Ping: ${data.fk_info.user_count} users, ${data.fk_info.fp_count} fingerprints`);
+          }
+          
+          // Check if this is an attendance hit!
+          if (data.user_id && data.io_time) {
+            const record = {
+              receivedAt : timestamp(),
+              serialNo   : data.SerialNo     || '',
+              userId     : data.user_id,
+              deviceId   : data.fk_device_id || '',
+              verifyMode : VERIFY_MODE[data.verify_mode] || data.verify_mode || '',
+              ioMode     : data.io_mode      || '',
+              punchTime  : formatIoTime(data.io_time),
+              logId,
+              remoteAddr,
+            };
+            appendAttendanceLog(record);
+            console.log(`  🌟 SAVED | User: ${record.userId} | Time: ${record.punchTime} | Mode: ${record.verifyMode}`);
+          }
+
+        } catch (err) {
+          console.log(`  ⚠ Parse error: ${err.message}`);
+        }
+      }
+    }
+
+    // ALWAYS reply with valid HTTP 200 OK + the expected JSON
+    const ack = JSON.stringify({ log_id: logId, result: 'OK', mode: 'nothing' });
+    res.writeHead(200, {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(ack)
+    });
+    res.end(ack);
+    console.log(`  ↩ ACK Sent: ${ack}`);
+  });
 });
 
 server.on('error', (err) => console.error(`[${timestamp()}] FATAL: ${err.message}`));
 
-server.listen(TCP_PORT, '0.0.0.0', () => {
+server.listen(PORT, '0.0.0.0', () => {
   console.log('─'.repeat(55));
-  console.log(`  Biomax N-E90 Pro TCP Log Server`);
-  console.log(`  TCP Port  : ${TCP_PORT}`);
+  console.log(`  Biomax HTTP Server`);
+  console.log(`  Port      : ${PORT}`);
   console.log(`  Log dir   : ${LOG_DIR}`);
   console.log(`  Started   : ${timestamp()}`);
   console.log('─'.repeat(55));
