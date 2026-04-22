@@ -142,17 +142,24 @@ const server = http.createServer((req, res) => {
       }
     }
 
-    // Send the raw ADMS device ACK format (plain text "OK")
-    // The previous JSON format was an abstraction from the Windows OCX driver.
-    // The physical firmware actually expects simple plain text to clear the log.
-    const ack = "OK\n";
+    // Send the ACK wrapped in a binary frame header!
+    // The physical Biomax firmware requires the JSON string to be preceded by
+    // a 4-byte Little Endian integer representing the string length.
+    const ackJson = JSON.stringify({ log_id: logId || "", result: "OK" });
+    const jsonBuffer = Buffer.from(ackJson, 'utf8');
+    
+    const headerBuffer = Buffer.alloc(4);
+    headerBuffer.writeInt32LE(jsonBuffer.length, 0);
+    
+    // Combine 4-byte binary header + JSON string
+    const finalBuffer = Buffer.concat([headerBuffer, jsonBuffer]);
 
     res.writeHead(200, {
-      'Content-Type': 'text/plain',
-      'Content-Length': Buffer.byteLength(ack)
+      'Content-Type': 'application/octet-stream',
+      'Content-Length': finalBuffer.length
     });
-    res.end(ack);
-    console.log(`  ↩ ACK Sent: RAW "OK"`);
+    res.end(finalBuffer);
+    console.log(`  ↩ ACK Sent: ${ackJson} (with binary headers)`);
   });
 });
 
