@@ -134,8 +134,11 @@ const server = http.createServer((req, res) => {
       }
     }
 
-    // ALWAYS reply with valid HTTP 200 OK + the expected JSON
-    const ack = JSON.stringify({ log_id: logId, result: 'OK', mode: 'nothing' });
+    // Send the ACK to clear the device log
+    const ackObj = { result: "OK" };
+    if (logId) ackObj.log_id = logId;
+    const ack = JSON.stringify(ackObj);
+
     res.writeHead(200, {
       'Content-Type': 'application/json',
       'Content-Length': Buffer.byteLength(ack)
