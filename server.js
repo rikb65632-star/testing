@@ -92,8 +92,13 @@ const server = net.createServer((socket) => {
                 }
                 
                 // 2. THE MAGICAL ACKNOWLEDGMENT
-                // Echo the ID back to the device to kill the repeat loop
-                const ackJsonStr = `{\r\n  "log_id": "${responseId}",\r\n  "result": "OK",\r\n  "mode": "nothing"\r\n}`;
+                // The device is very picky. If it sends "backup_number", it wants "backup_number" in the response.
+                const responseObj = { result: "OK", mode: "nothing" };
+                if (parsed.log_id) responseObj.log_id = parsed.log_id;
+                if (parsed.backup_number) responseObj.backup_number = parsed.backup_number;
+                if (!parsed.log_id && !parsed.backup_number) responseObj.log_id = "1";
+
+                const ackJsonStr = JSON.stringify(responseObj, null, 2).replace(/\n/g, '\r\n');
                 const jsonBuffer = Buffer.from(ackJsonStr + '\0', 'utf8');
                 
                 const headerBuffer = Buffer.alloc(16);
