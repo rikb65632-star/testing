@@ -71,6 +71,9 @@ const server = net.createServer((socket) => {
                     };
                     fs.appendFileSync(getLogFile(), JSON.stringify(record) + ',\n');
                     logToConsoleAndFile(`🌟 SAVED | User: ${record.user_id} | Time: ${record.time}`);
+                } else {
+                    // It's a non-punch heartbeat, ping, or enroll backup!
+                    logToConsoleAndFile(`🔧 SYSTEM PACKET: ${jsonSlice.toString('utf8')}`);
                 }
                 
                 // 2. THE MAGICAL ACKNOWLEDGMENT
