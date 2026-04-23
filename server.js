@@ -59,9 +59,6 @@ const server = net.createServer((socket) => {
         const parsed = JSON.parse(jsonSlice.toString('utf8'));
 
         // --- SUCCESSFUL PARSE! ---
-        const logId = parsed.log_id || "1";
-
-        // If it's a real punch, save it
         if (parsed.user_id && parsed.io_time) {
           // Decode Check-In/Out Status
           // 0 = Check In, 1 = Check Out, 2 = Break In, 3 = Break Out, 4 = Overtime In, 5 = Overtime Out
@@ -85,17 +82,19 @@ const server = net.createServer((socket) => {
             raw: parsed
           };
           fs.appendFileSync(getLogFile(), JSON.stringify(record) + ',\n');
-          logToConsoleAndFile(`🌟 SAVED | User: ${record.user_id} | Time: ${record.time} | Mode: ${checkStatus}`);
+          
+          // --- PRINT FULL DATA FOR CARD RESEARCH ---
+          logToConsoleAndFile(`🌟 SAVED | User: ${record.user_id} | Mode: ${checkStatus}`, parsed);
         } else {
           // It's a non-punch heartbeat, ping, or enroll backup!
-          logToConsoleAndFile(`🔧 SYSTEM PACKET: ${jsonSlice.toString('utf8')}`);
+          logToConsoleAndFile(`🔧 SYSTEM PACKET:`, parsed);
         }
 
         // 2. THE MAGICAL ACKNOWLEDGMENT
-        // The Wireshark packet shows the exact format:
-        // RTLOG003C[nulnulnul][Length Integer][JSON with \0 end][16 padding nuls]
+        // If it's an enrollment backup, it uses backup_number instead of log_id
+        const responseId = parsed.log_id || parsed.backup_number || "1";
 
-        const ackJsonStr = `{\r\n  "log_id": "${logId}",\r\n  "result": "OK",\r\n  "mode": "nothing"\r\n}`;
+        const ackJsonStr = `{\r\n  "log_id": "${responseId}",\r\n  "result": "OK",\r\n  "mode": "nothing"\r\n}`;
         const jsonBuffer = Buffer.from(ackJsonStr + '\0', 'utf8');
 
         const headerBuffer = Buffer.alloc(16);
