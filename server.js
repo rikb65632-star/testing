@@ -25,11 +25,8 @@ function logToConsoleAndFile(message, dataObject = null) {
 }
 
 const server = net.createServer((socket) => {
-    const clientIP = socket.remoteAddress;
-
     // 1. THE INVISIBLE HANDSHAKE
-    // This tells the device "I am the official Biomax Windows Software!"
-    // bb 66 00 a9 ... is the secret key discovered via Wireshark.
+    // Tells the device we are the official server immediately upon connection
     const handshake = Buffer.from('bb6600a900000000000000000000ca0100', 'hex');
     socket.write(handshake);
     
@@ -52,17 +49,10 @@ const server = net.createServer((socket) => {
             
             try {
                 const parsed = JSON.parse(jsonSlice.toString('utf8'));
-                
-                // --- SUCCESSFUL PARSE! ---
-                
-                // Determine the correct ID to use in the ACK (ACK MUST echo the device's ID)
-                // Real punches use 'log_id', System backups use 'backup_number'
                 const responseId = parsed.log_id || parsed.backup_number || "1";
                 
-                // Check if it's a real punch (Attendance)
-                if (parsed.user_id && (parsed.io_time || parsed.card_no || parsed.rfid)) {
-                    
-                    // Decode Check-In/Out Status mapping
+                // --- DETECT ATTENDANCE PUNCHES ---
+                if (parsed.user_id && parsed.io_time) {
                     const statusMap = {
                         "0": "Check In",
                         "1": "Check Out",
@@ -70,29 +60,32 @@ const server = net.createServer((socket) => {
                         "3": "Break Out"
                     };
                     
-                    const ioModeStr = String(parsed.io_mode || "0");
-                    const checkStatus = statusMap[ioModeStr] || `Mode ${ioModeStr}`;
+                    const ioModeVal = parsed.io_mode || "0";
+                    const checkStatus = statusMap[ioModeVal] || `Mode ${ioModeVal}`;
 
                     const record = {
-                        user_id: parsed.user_id,
+                        card_user_id: parsed.user_id,
                         time: parsed.io_time,
-                        check_status: checkStatus,
-                        verify_mode: parsed.verify_mode,
-                        card_no: parsed.card_no || parsed.rfid || null, // Capture card if present
+                        status: checkStatus,
                         raw: parsed
                     };
 
                     fs.appendFileSync(getLogFile(), JSON.stringify(record) + ',\n');
                     
-                    // --- LOG EVERYTHING TO FIND THE CARD ID ---
-                    logToConsoleAndFile(`🌟 SAVED | User: ${record.user_id} | Mode: ${checkStatus}`, parsed);
+                    if (parsed.verify_mode === "IDCARD") {
+                        console.log(`✅ [CARD SWIPE] >> CARD ID: ${parsed.user_id} | Mode: ${checkStatus}`);
+                    } else {
+                        console.log(`👤 [FINGERPINT] >> USER ID: ${parsed.user_id} | Mode: ${checkStatus}`);
+                    }
                 } else {
-                    // It's a non-punch heartbeat, ping, or enroll backup!
-                    logToConsoleAndFile(`🔧 SYSTEM PACKET:`, parsed);
+                    // Log system pings silently or with minimal info
+                    if (!parsed.backup_number) {
+                         console.log(`📡 Heartbeat received from device`);
+                    }
                 }
                 
                 // 2. THE MAGICAL ACKNOWLEDGMENT
-                // The device is very picky. If it sends "backup_number", it wants "backup_number" in the response.
+                // Mirror the key (log_id or backup_number) and value to stop loops
                 const responseObj = { result: "OK", mode: "nothing" };
                 if (parsed.log_id) responseObj.log_id = parsed.log_id;
                 if (parsed.backup_number) responseObj.backup_number = parsed.backup_number;
@@ -109,10 +102,8 @@ const server = net.createServer((socket) => {
                 headerBuffer.writeInt32LE(jsonBuffer.length, 12);
                 
                 const paddingBuffer = Buffer.alloc(16);
-                
                 const finalAck = Buffer.concat([headerBuffer, jsonBuffer, paddingBuffer]);
                 socket.write(finalAck);
-                logToConsoleAndFile(`  ↩ ACK Sent: "RTLOG003C" -> ID: ${responseId}`);
                 
                 receiveBuffer = receiveBuffer.slice(end + 1);
                 searchIndex = 0; 
@@ -128,14 +119,13 @@ const server = net.createServer((socket) => {
         }
     });
 
-    socket.on('error', (err) => { /* ignore */ });
-    socket.on('close', () => { /* ignore */ });
+    socket.on('error', () => {});
+    socket.on('close', () => {});
 });
 
 server.listen(PORT, '0.0.0.0', () => {
     console.log('───────────────────────────────────────────────────────');
-    console.log('  Biomax NATIVE raw TCP Server (V3.0)');
-    console.log(`  Port      : ${PORT}`);
-    console.log('  Status    : System-wide Acknowledgment Enabled');
+    console.log('  Biomax N-E90 Pro | DIRECT TCP RELAY');
+    console.log(`  ONLINE ON PORT: ${PORT}`);
     console.log('───────────────────────────────────────────────────────');
 });
