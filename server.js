@@ -85,25 +85,13 @@ const server = net.createServer((socket) => {
                 }
                 
                 // 2. THE MAGICAL ACKNOWLEDGMENT
-                // Mirror the key (log_id or backup_number) and value to stop loops
-                const responseObj = { result: "OK", mode: "nothing" };
+                // The device is very picky. If it sends "backup_number", it wants "backup_number" in the response.
+                const responseObj = { result: "OK", mode: "online" };
                 if (parsed.log_id) responseObj.log_id = parsed.log_id;
                 if (parsed.backup_number) responseObj.backup_number = parsed.backup_number;
                 if (!parsed.log_id && !parsed.backup_number) responseObj.log_id = "1";
 
-                const ackJsonStr = JSON.stringify(responseObj, null, 2).replace(/\n/g, '\r\n');
-                const jsonBuffer = Buffer.from(ackJsonStr + '\0', 'utf8');
-                
-                const headerBuffer = Buffer.alloc(16);
-                headerBuffer.write('RTLOG003C', 0, 'ascii'); 
-                headerBuffer.writeUInt8(0, 9);
-                headerBuffer.writeUInt8(0, 10);
-                headerBuffer.writeUInt8(0, 11);
-                headerBuffer.writeInt32LE(jsonBuffer.length, 12);
-                
-                const paddingBuffer = Buffer.alloc(16);
-                const finalAck = Buffer.concat([headerBuffer, jsonBuffer, paddingBuffer]);
-                socket.write(finalAck);
+                sendAck(socket, 'RTLOG003C', responseObj);
                 
                 receiveBuffer = receiveBuffer.slice(end + 1);
                 searchIndex = 0; 
@@ -119,9 +107,47 @@ const server = net.createServer((socket) => {
         }
     });
 
-    socket.on('error', () => {});
-    socket.on('close', () => {});
+    // 3. THE CLOUD BLOOM HEARTBEAT
+    // Sending a periodic 'online' status makes the physical Cloud Icon bloom
+    const heartbeatInterval = setInterval(() => {
+        if (socket.destroyed) {
+            clearInterval(heartbeatInterval);
+            return;
+        }
+        sendAck(socket, 'RTLOG003C', { result: "OK", mode: "online", log_id: "1" });
+    }, 30000);
+
+    socket.on('error', () => { clearInterval(heartbeatInterval); });
+    socket.on('close', () => { clearInterval(heartbeatInterval); });
 });
+
+/**
+ * Helper to wrap JSON in the proprietary 32-bit binary header
+ */
+function sendAck(socket, type, responseObj) {
+    if (socket.destroyed) return;
+
+    try {
+        const ackJsonStr = JSON.stringify(responseObj, null, 2).replace(/\n/g, '\r\n');
+        const jsonBuffer = Buffer.from(ackJsonStr + '\0', 'utf8');
+        
+        const headerBuffer = Buffer.alloc(16);
+        headerBuffer.write(type, 0, 'ascii'); 
+        headerBuffer.writeUInt8(0, 9);
+        headerBuffer.writeUInt8(0, 10);
+        headerBuffer.writeUInt8(0, 11);
+        headerBuffer.writeInt32LE(jsonBuffer.length, 12);
+        
+        const paddingBuffer = Buffer.alloc(16);
+        const finalAck = Buffer.concat([headerBuffer, jsonBuffer, paddingBuffer]);
+        
+        socket.write(finalAck);
+        const idLabel = responseObj.log_id || responseObj.backup_number || "Ping";
+        // console.log(`  ↩ ${type} Sent | ID: ${idLabel} | Mode: ${responseObj.mode}`);
+    } catch (e) {
+        // console.error(`  ❌ Failed to send ACK: ${e.message}`);
+    }
+}
 
 server.listen(PORT, '0.0.0.0', () => {
     console.log('───────────────────────────────────────────────────────');
